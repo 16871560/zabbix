@@ -1,0 +1,195 @@
+#关闭SELINUX,防火墙
+systemctl stop firewalld.service
+systemctl disable firewalld.service
+sed -i 's/SELINUX=enforcing/SELINUX=disabled/' /etc/selinux/config
+grep SELINUX=disabled /etc/selinux/config
+setenforce 0
+#echo "enforce `getenforce`"
+#lnmp搭建
+###写入nginx.repo源
+#echo "Installing nginx,please wait!"
+echo '[nginx]
+name=nginx.repo
+baseurl=http://nginx.org/packages/centos/$releasever/$basearch/
+gpgcheck=0
+enabled=1'>>/etc/yum.repos.d/nginx.repo
+#安装nginx
+#rm -f /var/run/yum.pid
+yum -y install nginx &> /dev/null
+if [ `echo $?` -eq 0 ] 
+then
+     echo "nginx install successful!"
+else 
+     echo "nginx install failed.please check it!"
+     exit
+fi
+systemctl start nginx &> /dev/null
+if [ `echo $?` -eq 0 ] 
+then
+     echo -e "nginx is running.\n"
+else 
+     echo  "nginx start failed.please check it!"
+     exit
+fi
+ 
+###安装mariadb（mysql）
+###安装php
+#查看php的yum源版本
+if [ `yum list | grep ^php|head -n 1|awk -F"." '{print $3}'` -ge 3 ] 
+then 
+    echo "Your php-version support zabbix 3.0,installing now!"
+else 
+    echo "Your php-version can't support zabbix 3.0!Installing failed!"
+	exit
+fi
+echo "Installing mysql and php,please wait!"
+for i in mysql mariadb-server php php-mysql php-fpm 
+do 
+    yum -y install $i &> /dev/null
+    if [ `echo $?` -eq 0 ]
+    then 	
+	      echo "$i install successful!"
+    else 
+	      yum -y install $i &> /dev/null 
+	fi
+done
+for j in  mariadb.service  php-fpm 
+do 
+    systemctl start $j &> /dev/null
+    if [ `echo $?` -eq 0 ]
+    then 	
+	      echo "$j is running!"
+    else 
+	      echo "$j start failed!please check it!"
+		  exit 
+	fi
+	systemctl enable $j &> /dev/null
+done
+ 
+#修改php配置使其适合zabbix
+cp /etc/php.ini /etc/php.ini.backup
+sed -i 's#;date.timezone =#date.timezone = Asia/Shanghai#' /etc/php.ini
+sed -i 's/max_execution_time = 30/max_execution_time = 300/' /etc/php.ini
+sed -i 's/max_input_time = 60/max_input_time = 300/' /etc/php.ini
+sed -i 's/post_max_size = 8M/post_max_size = 16M/' /etc/php.ini
+ 
+#修改php-fpm
+cp /etc/php-fpm.d/www.conf /etc/php-fpm.d/www.conf.backup
+sed -i 's/user = apache/user = nginx/' /etc/php-fpm.d/www.conf
+sed -i 's/group = apache/group = nginx/' /etc/php-fpm.d/www.conf
+ 
+echo  '<?php
+        phpinfo();
+		?>' >>/usr/share/nginx/html/index.php
+		
+mv /etc/nginx/conf.d/default.conf  /etc/nginx/conf.d/default.conf.backup
+echo '
+server {
+    listen       80;
+    server_name  localhost;
+    location / {
+        root   /usr/share/nginx/html;
+        index  index.html index.htm index.php;
+    }
+    error_page   500 502 503 504  /50x.html;
+    location = /50x.html {
+        root   /usr/share/nginx/html;
+    }
+      location ~ \.php$ {
+       root           html;
+       fastcgi_pass   127.0.0.1:9000;
+       fastcgi_index  index.php;
+       fastcgi_param  SCRIPT_FILENAME  /usr/share/nginx/html$fastcgi_script_name;
+       fastcgi_buffer_size 128k;
+       fastcgi_buffers 4 256k;
+       fastcgi_busy_buffers_size 256k;
+       include        fastcgi_params;
+    }
+}'>>/etc/nginx/conf.d/phpinfo.conf
+systemctl restart nginx php-fpm 
+ 
+#测试nginx代理和php页面文件
+echo -e "\nTesting http://localhost (The state of nginx) "
+echo "Testing http://localhost/index.php (The state of php)"
+if [ "`curl -s localhost | grep Welcome | tail -n 1| awk -F"<h1>" '{print $2}'| awk -F"</h1>" '{print $1}'`" = "Welcome to nginx!" ]
+then
+    echo "The web of nginx is normal!"
+else
+	echo "ERROR! The web if nginx isn't normal!"
+fi
+ 
+if [ "`curl -s localhost/index.php | grep "PHP Version" | tail -n 1 |awk -F">" '{print $3}'| awk -F"<" '{print $1}'`" = "PHP Version " ]
+then
+    echo "The web of php is normal!"
+else
+	echo "ERROR! The web of php isn't normal!"
+fi
+ 
+##安装zabbix
+echo -e "\nInstalling ZABBIX,please wait."
+za_install(){
+rpm -i https://repo.zabbix.com/zabbix/3.0/rhel/7/x86_64/zabbix-release-3.0-1.el7.noarch.rpm &> /dev/null
+yum -y install $k &> /dev/null 
+}
+ 
+for k in zabbix-server-mysql zabbix-web-mysql zabbix-agent
+do 
+    za_install
+    if [ `echo $?` -eq 0 ]
+    then 	
+	      echo "$k install successful!"
+	else
+	      za_install
+	fi
+done
+	
+echo -e "\nThe following zabbix application had installed."
+rpm -qa|grep zabbix
+#创建zabbix数据库
+systemctl start mariadb
+echo -e '\nCreating the mysql database.'
+mysql<<EOF
+create database zabbix character set utf8 collate utf8_bin;
+grant all privileges on zabbix.* to zabbix@localhost identified by 'zabbix'; 
+EOF
+ 
+zcat /usr/share/doc/zabbix-server-mysql*/create.sql.gz | mysql -uzabbix -pzabbix zabbix
+ 
+##修改zabbix配置
+sed -i 's/^# DBHost=localhost/DBHost=localhost/' /etc/zabbix/zabbix_server.conf
+sed -i 's/^# DBPassword=/DBPassword=zabbix/' /etc/zabbix/zabbix_server.conf
+ 
+ 
+###为zabbix创建一个新的nginx配置文件
+echo '
+server {
+    listen       80;
+    server_name  localhost;
+    root   /usr/share/zabbix;
+    location / {
+        root   /usr/share/zabbix;
+        index  index.php;
+    }
+    error_page   500 502 503 504  /50x.html;
+    location = /50x.html {
+        root   /usr/share/nginx/html;
+    }
+    location ~ \.php$ {
+        fastcgi_pass   127.0.0.1:9000;
+        fastcgi_index  index.php;
+        fastcgi_param  SCRIPT_FILENAME  $document_root$fastcgi_script_name;
+	    fastcgi_buffer_size 128k;
+        fastcgi_buffers 4 256k;
+        fastcgi_busy_buffers_size 256k;
+        include        fastcgi_params;
+    }
+}'>/etc/nginx/conf.d/phpinfo.conf
+ 
+ 
+chown -R nginx:nginx /etc/zabbix/web 
+chown -R nginx:nginx /var/lib/php/session
+systemctl restart zabbix-server  nginx php-fpm
+systemctl enable zabbix-server  nginx php-fpm mariadb &> /dev/null
+ 
+echo -e 安装完成。请登陆"\e[1;31m localhost/setup.php \e[0m"页面进行zabbix安装设置。
+echo -e The install is successful,please login "\e[1;31m localhost/setup.php \e[0m" to configure your web of zabbix.
