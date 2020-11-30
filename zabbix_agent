@@ -1,0 +1,15 @@
+
+systemctl stop firewalld.service
+systemctl disable firewalld.service
+sed -i 's/SELINUX=enforcing/SELINUX=disabled/' /etc/selinux/config
+
+yum install wget -y
+yum install curl -y
+/usr/bin/wget -P /tmp http://repo.zabbix.com/zabbix/3.2/rhel/7/x86_64/zabbix-agent-3.2.1-1.el7.x86_64.rpm
+/bin/rpm -ivh /tmp/zabbix-agent-3.2.1-1.el7.x86_64.rpm
+IP=$(/sbin/ifconfig $1 |awk 'NR==2{print $0}'|awk '{print $2}')
+SVRIP=172.18.144.202
+systemctl start zabbix-agent.service
+cp /etc/zabbix/zabbix_agentd.conf /etc/zabbix/zabbix_agentd.bak
+sed -i "s/Server\=127.0.0.1/Server\=$SVRIP/g;s/ServerActive\=127.0.0.1/ServerActive\=$SVRIP/g;s/\# ListenIP\=0.0.0.0/ListenIP=$IP/g;s/Hostname\=Zabbix server/Hostname\=$IP/g;s/\# UnsafeUserParameters\=0/UnsafeUserParameters\=1/g" /etc/zabbix/zabbix_agentd.conf
+systemctl restart zabbix-agent.service
