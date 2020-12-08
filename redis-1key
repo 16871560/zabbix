@@ -1,0 +1,41 @@
+#!/bin/bash
+##################
+port=(7000 7001 7002 7003 7004 7005) #port
+#ip=($(/sbin/ifconfig | grep 'inet'| grep -v '127.0.0.1' | grep 'inet addr:' | head -1 | cut -d ":" -f 2 | awk '{print $1}'))
+
+yum install wget -y
+
+ip=($(ifconfig | grep 'inet'| grep -v '127.0.0.1' | grep 'inet'|  head -1 | cut -d ":" -f 2 | awk '{print $2}'))
+cd /tmp
+wget http://download.redis.io/releases/redis-5.0.5.tar.gz
+yum install gcc* -y
+yum -y install tcl ruby rubygems && gem install redis
+tar -xf redis-5.0.5.tar.gz
+cd  redis-5.0.5
+make&&make test&&make install
+cp ./src/redis-trib.rb /usr/local/bin/
+
+######down and install ######
+
+########################
+mkdir -p /usr/local/redis/cluster
+cp ./redis.conf /usr/local/redis/cluster/ #####cluster path
+cd /usr/local/redis/cluster
+
+for it in ${port[*]}
+
+do
+    mkdir ${it}
+    cp ./redis.conf ./${it}
+    sed -i "s/port 6379/port ${it}/" ./${it}/redis.conf
+    sed -i "s/daemonize no/daemonize yes/" ./${it}/redis.conf
+    sed -i "s/# cluster-enabled yes/cluster-enabled yes/" ./${it}/redis.conf
+    sed -i "s/# cluster-config-file nodes-6379.conf/cluster-config-file nodes.conf/" ./${it}/redis.conf
+    sed -i "s/# cluster-node-timeout 15000/cluster-node-timeout 5000/" ./${it}/redis.conf
+    sed -i "s/bind 127.0.0.1/#bind 127.0.0.1/" ./${it}/redis.conf ####if listen to 127.0.0.0, comment it 
+    sed -i "s/protected-mode yes/protected-mode no/" ./${it}/redis.conf #########if not  listen to  127.0.0.1 
+    cd ./${it}
+    /usr/local/bin/redis-server redis.conf
+    cd ..
+done
+echo 'yes'|/usr/local/bin/redis-cli --cluster create  ${ip}:7000 ${ip}:7001 ${ip}:7002 ${ip}:7003 ${ip}:7004 ${ip}:7005 --cluster-replicas 1
